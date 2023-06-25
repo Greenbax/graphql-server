@@ -11,8 +11,13 @@ from collections import namedtuple
 from collections.abc import MutableMapping
 from typing import Any, Callable, Collection, Dict, List, Optional, Type, Union, cast
 
+from graphql import ExperimentalIncrementalExecutionResults
 from graphql.error import GraphQLError
-from graphql.execution import ExecutionResult, execute
+from graphql.execution import (
+    ExecutionResult,
+    execute,
+    experimental_execute_incrementally,
+)
 from graphql.language import OperationType, parse
 from graphql.pyutils import AwaitableOrValue
 from graphql.type import GraphQLSchema, validate_schema
@@ -307,6 +312,71 @@ def get_response(
 
     return execution_result
 
+def get_response_incrementally(
+    schema: GraphQLSchema,
+    params: GraphQLParams,
+    catch_exc: Type[BaseException],
+    allow_only_query: bool = False,
+    run_sync: bool = True,
+    validation_rules: Optional[Collection[Type[ASTValidationRule]]] = None,
+    max_errors: Optional[int] = None,
+    **kwargs,
+) -> Optional[AwaitableOrValue[Union[ExecutionResult, ExperimentalIncrementalExecutionResults]]]:
+    """
+    Same as get_response except calling the experimental feature of excecuting incrementally
+    """
+    # noinspection PyBroadException
+    try:
+        if not params.query:
+            raise HttpQueryError(400, "Must provide query string.")
+
+        # Sanity check query
+        if not isinstance(params.query, str):
+            raise HttpQueryError(400, "Unexpected query type.")
+
+        schema_validation_errors = validate_schema(schema)
+        if schema_validation_errors:
+            return ExecutionResult(data=None, errors=schema_validation_errors)
+
+        try:
+            document = parse(params.query)
+        except GraphQLError as e:
+            return ExecutionResult(data=None, errors=[e])
+        except Exception as e:
+            e = GraphQLError(str(e), original_error=e)
+            return ExecutionResult(data=None, errors=[e])
+
+        if allow_only_query:
+            operation_ast = get_operation_ast(document, params.operation_name)
+            if operation_ast:
+                operation = operation_ast.operation.value
+                if operation != OperationType.QUERY.value:
+                    raise HttpQueryError(
+                        405,
+                        f"Can only perform a {operation} operation"
+                        " from a POST request.",
+                        headers={"Allow": "POST"},
+                    )
+
+        validation_errors = validate(
+            schema, document, rules=validation_rules, max_errors=max_errors
+        )
+        if validation_errors:
+            return ExecutionResult(data=None, errors=validation_errors)
+
+        execution_result = experimental_execute_incrementally(
+            schema,
+            document,
+            variable_values=params.variables,
+            operation_name=params.operation_name,
+            is_awaitable=assume_not_awaitable if run_sync else None,
+            **kwargs,
+        )
+
+    except catch_exc:
+        return None
+
+    return execution_result
 
 def format_execution_result(
     execution_result: Optional[ExecutionResult],

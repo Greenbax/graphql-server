@@ -72,6 +72,7 @@ def run_http_query(
     batch_enabled: bool = False,
     catch: bool = False,
     run_sync: bool = True,
+    should_execute_incrementally: bool = False,
     **execute_options,
 ) -> GraphQLResponse:
     """Execute GraphQL coming from an HTTP query against a given schema.
@@ -129,7 +130,7 @@ def run_http_query(
 
     results: List[Optional[AwaitableOrValue[ExecutionResult]]] = [
         get_response(
-            schema, params, catch_exc, allow_only_query, run_sync, **execute_options
+            schema, params, catch_exc, allow_only_query, run_sync, should_execute_incrementally=should_execute_incrementally, **execute_options
         )
         for params in all_params
     ]
@@ -248,8 +249,9 @@ def get_response(
     run_sync: bool = True,
     validation_rules: Optional[Collection[Type[ASTValidationRule]]] = None,
     max_errors: Optional[int] = None,
+    should_execute_incrementally: bool = False,
     **kwargs,
-) -> Optional[AwaitableOrValue[ExecutionResult]]:
+) -> Optional[AwaitableOrValue[ExecutionResult|ExperimentalIncrementalExecutionResults]]:
     """Get an individual execution result as response, with option to catch errors.
 
     This will validate the schema (if the schema is used for the first time),
@@ -298,7 +300,8 @@ def get_response(
         if validation_errors:
             return ExecutionResult(data=None, errors=validation_errors)
 
-        execution_result = execute(
+        execute_func = experimental_execute_incrementally if should_execute_incrementally else execute
+        execution_result = execute_func(
             schema,
             document,
             variable_values=params.variables,
